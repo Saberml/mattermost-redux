@@ -233,6 +233,10 @@ function filterProfiles(profiles: IDMappedObjects<UserProfile>, filters?: Filter
     }, {} as IDMappedObjects<UserProfile>);
 }
 
+export function getIsManualStatusForUserId(state: GlobalState, userId: $ID<UserProfile>): boolean {
+    return state.entities.users.isManualStatus[userId];
+}
+
 export const getProfilesInCurrentChannel: (a: GlobalState) => Array<UserProfile> = createSelector(
     getUsers,
     getProfileSetInCurrentChannel,
@@ -489,11 +493,8 @@ export function makeGetDisplayName(): (a: GlobalState, b: $ID<UserProfile>, c: b
         (state: GlobalState, userId: string) => getUser(state, userId),
         getTeammateNameDisplaySetting,
         (state, _, useFallbackUsername = true) => useFallbackUsername,
-        getConfig,
-        (user, teammateNameDisplaySetting, useFallbackUsername, config) => {
-            const useAdminTemmateNameDisplaySetting = config.LockTeammateNameDisplay === 'true';
-            const adminTeammateNameDisplaySetting = config.TeammateNameDisplay;
-            return displayUsername(user, teammateNameDisplaySetting!, useFallbackUsername, useAdminTemmateNameDisplaySetting, adminTeammateNameDisplaySetting);
+        (user, teammateNameDisplaySetting, useFallbackUsername) => {
+            return displayUsername(user, teammateNameDisplaySetting!, useFallbackUsername);
         }
     );
 }

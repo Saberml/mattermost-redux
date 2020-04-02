@@ -9,7 +9,7 @@ import {sortChannelsByDisplayName, getDirectChannelName} from 'utils/channel_uti
 import * as Selectors from 'selectors/entities/channels';
 import * as TeamSelectors from 'selectors/entities/teams';
 import * as PreferencesSelectors from 'selectors/entities/preferences';
-import {General, Preferences} from '../../constants';
+import {General, Preferences, Permissions} from '../../constants';
 
 const sortUsernames = (a, b) => a.localeCompare(b, General.DEFAULT_LOCALE, {numeric: true});
 
@@ -39,7 +39,7 @@ describe('Selectors.Channels.getChannelsInCurrentTeam', () => {
         const channelsInTeam = {
             [team1.id]: [channel1.id, channel3.id],
             [team2.id]: [channel2.id],
-            ['']: [channel4.id],
+            '': [channel4.id],
         };
 
         const testState = deepFreezeAndThrowOnMutation({
@@ -137,6 +137,56 @@ describe('Selectors.Channels.getChannelsInCurrentTeam', () => {
     });
 });
 
+describe('Selectors.Channels.getKnownUsers', () => {
+    const channel1 = TestHelper.fakeChannelWithId('');
+    const channel2 = TestHelper.fakeChannelWithId('');
+
+    const me = TestHelper.fakeUserWithId();
+    const user = TestHelper.fakeUserWithId();
+    const user2 = TestHelper.fakeUserWithId();
+    const user3 = TestHelper.fakeUserWithId();
+
+    const membersInChannel = {
+        [channel1.id]: {
+            [user.id]: {channel_id: channel1.id, user_id: user.id},
+            [user2.id]: {channel_id: channel1.id, user_id: user2.id},
+        },
+        [channel2.id]: {
+            [user3.id]: {channel_id: channel2.id, user_id: user3.id},
+        },
+    };
+
+    it('should return all members of all my channels', () => {
+        const testState = deepFreezeAndThrowOnMutation({
+            entities: {
+                users: {
+                    currentUserId: me.id,
+                },
+                channels: {
+                    membersInChannel,
+                },
+            },
+        });
+
+        assert.deepEqual(Selectors.getKnownUsers(testState), new Set([me.id, user.id, user2.id, user3.id]));
+    });
+
+    it('should return only me if I have no channels', () => {
+        const testState = deepFreezeAndThrowOnMutation({
+            entities: {
+                users: {
+                    currentUserId: me.id,
+                },
+                channels: {
+                    membersInChannel: {},
+                },
+            },
+        });
+
+        assert.deepEqual(Selectors.getKnownUsers(testState), new Set([me.id]));
+    });
+});
+
 describe('Selectors.Channels.getMyChannels', () => {
     const team1 = TestHelper.fakeTeamWithId();
     const team2 = TestHelper.fakeTeamWithId();
@@ -187,7 +237,7 @@ describe('Selectors.Channels.getMyChannels', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel3.id],
         [team2.id]: [channel2.id],
-        ['']: [channel4.id, channel5.id],
+        '': [channel4.id, channel5.id],
     };
 
     const myMembers = {
@@ -196,7 +246,6 @@ describe('Selectors.Channels.getMyChannels', () => {
         [channel4.id]: {},
         [channel5.id]: {},
     };
-
 
     const testState = deepFreezeAndThrowOnMutation({
         entities: {
@@ -207,7 +256,7 @@ describe('Selectors.Channels.getMyChannels', () => {
                 profilesInChannel: {
                     [channel4.id]: new Set([user.id, user2.id]),
                     [channel5.id]: new Set([user.id, user2.id, user3.id]),
-                }
+                },
             },
             teams: {
                 currentTeamId: team1.id,
@@ -218,11 +267,11 @@ describe('Selectors.Channels.getMyChannels', () => {
                 myMembers,
             },
             preferences: {
-                myPreferences: {}
+                myPreferences: {},
             },
             general: {
-                config: {}
-            }
+                config: {},
+            },
         },
     });
 
@@ -231,7 +280,7 @@ describe('Selectors.Channels.getMyChannels', () => {
         assert.deepEqual(Selectors.getMyChannels(testState), [
             ...channelsInCurrentTeam,
             {...channel4, display_name: user2.username, status: 'offline', teammate_id: user2.id},
-            {...channel5, display_name: [user2.username, user3.username].sort(sortUsernames).join(', ')}
+            {...channel5, display_name: [user2.username, user3.username].sort(sortUsernames).join(', ')},
         ]);
     });
 });
@@ -319,7 +368,7 @@ describe('Selectors.Channels.getOtherChannels', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel3.id, channel5.id, channel6.id],
         [team2.id]: [channel2.id],
-        ['']: [channel4.id],
+        '': [channel4.id],
     };
 
     const myMembers = {
@@ -408,7 +457,7 @@ describe('Selectors.Channels.getArchivedChannels', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel3.id, channel5.id, channel6.id],
         [team2.id]: [channel2.id],
-        ['']: [channel4.id],
+        '': [channel4.id],
     };
 
     const myMembers = {
@@ -483,17 +532,17 @@ describe('Selectors.Channels.getChannel', () => {
                 profilesInChannel: {
                     [channel2.id]: new Set([user.id, user2.id]),
                     [channel3.id]: new Set([user.id, user2.id, user3.id]),
-                }
+                },
             },
             channels: {
                 channels,
             },
             preferences: {
-                myPreferences: {}
+                myPreferences: {},
             },
             general: {
-                config: {}
-            }
+                config: {},
+            },
         },
     });
 
@@ -651,150 +700,6 @@ describe('Selectors.Channels.getChannelsNameMapInTeam', () => {
     });
     it('get empty map for non-existing team', () => {
         assert.deepEqual(Selectors.getChannelsNameMapInTeam(testState, 'junk'), {});
-    })
-});
-
-describe('Selectors.Channels.getChannelsByCategory', () => {
-    const team1 = TestHelper.fakeTeamWithId();
-    const team2 = TestHelper.fakeTeamWithId();
-
-    const user = TestHelper.fakeUserWithId();
-    const user2 = TestHelper.fakeUserWithId();
-    const user3 = TestHelper.fakeUserWithId();
-
-    const profiles = {
-        [user.id]: user,
-        [user2.id]: user2,
-        [user3.id]: user3,
-    };
-
-    const channel1 = {
-        ...TestHelper.fakeChannelWithId(team1.id),
-        type: General.OPEN_CHANNEL,
-        display_name: 'Channel Name',
-    };
-    const channel2 = {
-        ...TestHelper.fakeChannelWithId(team2.id),
-        type: General.PRIVATE_CHANNEL,
-        display_name: 'Channel Name',
-    };
-    const channel3 = {
-        ...TestHelper.fakeChannelWithId(team1.id),
-        type: General.OPEN_CHANNEL,
-        display_name: 'Channel Name',
-    };
-    const channel4 = {
-        ...TestHelper.fakeChannelWithId(''),
-        type: General.DM_CHANNEL,
-        display_name: 'Channel Name',
-        name: getDirectChannelName(user.id, user2.id),
-    };
-    const channel5 = {
-        ...TestHelper.fakeChannelWithId(''),
-        type: General.GM_CHANNEL,
-        display_name: [user.username, user2.username, user3.username].join(', '),
-        name: '',
-    };
-    const channel6 = {
-        ...TestHelper.fakeChannelWithId(team1.id),
-        type: General.OPEN_CHANNEL,
-        display_name: 'Channel Name',
-    };
-    const channel7 = {
-        ...TestHelper.fakeChannelWithId(team1.id),
-        type: General.PRIVATE_CHANNEL,
-        display_name: 'Channel Name',
-    };
-
-    const channels = {
-        [channel1.id]: channel1,
-        [channel2.id]: channel2,
-        [channel3.id]: channel3,
-        [channel4.id]: channel4,
-        [channel5.id]: channel5,
-        [channel6.id]: channel6,
-        [channel7.id]: channel7,
-    };
-
-    const channelsInTeam = {
-        [team1.id]: [channel1.id, channel3.id, channel6.id, channel7.id],
-        [team2.id]: [channel2.id],
-        ['']: [channel4.id, channel5.id],
-    };
-
-    const myMembers = {
-        [channel1.id]: {},
-        [channel3.id]: {},
-        [channel4.id]: {},
-        [channel5.id]: {},
-        [channel6.id]: {},
-        [channel7.id]: {},
-    };
-
-    const myPreferences = {
-        [`${Preferences.CATEGORY_FAVORITE_CHANNEL}--${channel1.id}`]: {
-            value: 'true',
-        },
-        [`${Preferences.CATEGORY_FAVORITE_CHANNEL}--${channel3.id}`]: {
-            value: 'true',
-        },
-        [`${Preferences.CATEGORY_FAVORITE_CHANNEL}--${channel4.id}`]: {
-            value: 'false',
-        },
-        [`${Preferences.CATEGORY_FAVORITE_CHANNEL}--${channel5.id}`]: {
-            value: 'true',
-        },
-        [`${Preferences.CATEGORY_DIRECT_CHANNEL_SHOW}--${user2.id}`]: {
-            value: 'true'
-        }
-    };
-
-    const testState = deepFreezeAndThrowOnMutation({
-        entities: {
-            users: {
-                currentUserId: user.id,
-                profiles,
-                statuses: {},
-                profilesInChannel: {
-                    [channel4.id]: new Set([user.id, user2.id]),
-                    [channel5.id]: new Set([user.id, user2.id, user3.id]),
-                }
-            },
-            teams: {
-                currentTeamId: team1.id,
-            },
-            posts: {
-                posts: {},
-                postsInChannel: {},
-            },
-            channels: {
-                currentChannelId: channel1.id,
-                channels,
-                channelsInTeam,
-                myMembers,
-            },
-            preferences: {
-                myPreferences
-            },
-            general: {
-                config: {}
-            }
-        },
-    });
-
-    it('get channels by category', () => {
-        const categories = Selectors.getChannelsByCategory(testState);
-        const {
-            favoriteChannels,
-            publicChannels,
-            privateChannels,
-            directAndGroupChannels,
-        } = categories;
-
-        assert.equal(favoriteChannels.length, 3);
-        assert.equal(publicChannels.length, 1);
-        assert.equal(privateChannels.length, 1);
-        assert.equal(directAndGroupChannels.length, 1);
     });
 });
 
@@ -864,7 +769,7 @@ describe('Selectors.Channels.getChannelsWithUnreadSection', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel3.id, channel6.id, channel7.id],
         [team2.id]: [channel2.id],
-        ['']: [channel4.id, channel5.id],
+        '': [channel4.id, channel5.id],
     };
 
     const myMembers = {
@@ -900,7 +805,7 @@ describe('Selectors.Channels.getChannelsWithUnreadSection', () => {
                 profilesInChannel: {
                     [channel4.id]: new Set([user.id, user2.id]),
                     [channel5.id]: new Set([user.id, user2.id, user3.id]),
-                }
+                },
             },
             teams: {
                 currentTeamId: team1.id,
@@ -916,11 +821,11 @@ describe('Selectors.Channels.getChannelsWithUnreadSection', () => {
                 myMembers,
             },
             preferences: {
-                myPreferences
+                myPreferences,
             },
             general: {
-                config: {}
-            }
+                config: {},
+            },
         },
     });
 
@@ -994,7 +899,7 @@ describe('Selectors.Channels.getGroupChannels', () => {
 
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel2.id],
-        ['']: [channel3.id, channel4.id, channel5.id],
+        '': [channel3.id, channel4.id, channel5.id],
     };
 
     const testState = deepFreezeAndThrowOnMutation({
@@ -1007,7 +912,7 @@ describe('Selectors.Channels.getGroupChannels', () => {
                     [channel3.id]: new Set([user.id, user3.id]),
                     [channel4.id]: new Set([user.id, user2.id]),
                     [channel5.id]: new Set([user.id, user2.id, user3.id]),
-                }
+                },
             },
             channels: {
                 channels,
@@ -1017,8 +922,8 @@ describe('Selectors.Channels.getGroupChannels', () => {
                 myPreferences: {},
             },
             general: {
-                config: {}
-            }
+                config: {},
+            },
         },
     });
 
@@ -1043,6 +948,7 @@ describe('Selectors.Channels.getChannelIdsInCurrentTeam', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel2.id],
         [team2.id]: [channel3.id, channel4.id],
+        // eslint-disable-next-line no-useless-computed-key
         ['']: [channel5.id],
     };
 
@@ -1099,6 +1005,7 @@ describe('Selectors.Channels.getChannelIdsForCurrentTeam', () => {
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel2.id],
         [team2.id]: [channel3.id, channel4.id],
+        // eslint-disable-next-line no-useless-computed-key
         ['']: [channel5.id],
     };
 
@@ -1243,7 +1150,7 @@ describe('Selectors.Channels.isCurrentChannelArchived', () => {
                 myPreferences: {},
             },
             general: {
-                config: {}
+                config: {},
             },
         },
     });
@@ -1289,7 +1196,7 @@ describe('Selectors.Channels.isCurrentChannelDefault', () => {
                 myPreferences: {},
             },
             general: {
-                config: {}
+                config: {},
             },
         },
     });
@@ -1324,6 +1231,7 @@ describe('Selectors.Channels.getSortedFavoriteChannelWithUnreadsIds', () => {
 
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel2.id],
+        // eslint-disable-next-line no-useless-computed-key
         ['']: [],
     };
 
@@ -1368,7 +1276,7 @@ describe('Selectors.Channels.getSortedFavoriteChannelWithUnreadsIds', () => {
                 myPreferences,
             },
             general: {
-                config: {}
+                config: {},
             },
         },
     });
@@ -1442,6 +1350,7 @@ describe('Selectors.Channels.getChannelsWithUserProfiles', () => {
 
     const channelsInTeam = {
         [team1.id]: [channel1.id],
+        // eslint-disable-next-line no-useless-computed-key
         ['']: [channel2.id],
     };
 
@@ -1464,7 +1373,7 @@ describe('Selectors.Channels.getChannelsWithUserProfiles', () => {
         entities: {
             channels: {
                 channels,
-                channelsInTeam
+                channelsInTeam,
             },
             users: {
                 currentUserId: user1.id,
@@ -1475,11 +1384,11 @@ describe('Selectors.Channels.getChannelsWithUserProfiles', () => {
                 myPreferences: {},
             },
             general: {
-                config: {}
+                config: {},
             },
         },
     });
-    
+
     it('getChannelsWithUserProfiles', () => {
         const channelWithUserProfiles = Selectors.getChannelsWithUserProfiles(testState);
         assert.equal(channelWithUserProfiles.length, 1);
@@ -1509,7 +1418,7 @@ describe('Selectors.Channels.getRedirectChannelNameForTeam', () => {
         [channel1.id]: channel1,
         [channel2.id]: channel2,
         [channel3.id]: channel3,
-    }
+    };
 
     const user1 = TestHelper.fakeUserWithId();
 
@@ -2448,7 +2357,7 @@ describe('Selectors.Channels.filterPostIds', () => {
 
         assert.throws(() => filterPostIDsInvalid(testStateC, postIDs), ReferenceError, filterErrorMessage);
     });
-})
+});
 
 describe('Selectors.Channels.getSortedPrivateChannelIds', () => {
     const team1 = TestHelper.fakeTeamWithId();
@@ -2663,11 +2572,11 @@ describe('Selectors.Channels.getSortedFavoriteChannelIds', () => {
 
     const channel1 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "DEF",
+        display_name: 'DEF',
     };
     const channel2 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "GHI",
+        display_name: 'GHI',
     };
 
     const channels = {
@@ -2780,12 +2689,12 @@ describe('Selectors.Channels.getSortedUnreadChannelIds', () => {
 
     const channel1 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "DEF",
+        display_name: 'DEF',
     };
     const channel2 = TestHelper.fakeChannelWithId(team1.id);
     const channel3 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "ABC",
+        display_name: 'ABC',
     };
 
     const channels = {
@@ -2934,16 +2843,16 @@ describe('Selectors.Channels.getUnreadChannelIds', () => {
     const team1 = TestHelper.fakeTeamWithId();
     const channel1 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "ABC",
+        display_name: 'ABC',
         total_msg_count: 2,
     };
     const channel2 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "DEF",
+        display_name: 'DEF',
     };
     const channel3 = {
         ...TestHelper.fakeChannelWithId(team1.id),
-        display_name: "GHI",
+        display_name: 'GHI',
         total_msg_count: 2,
     };
     const channel4 = {
@@ -2968,6 +2877,7 @@ describe('Selectors.Channels.getUnreadChannelIds', () => {
 
     const channelsInTeam = {
         [team1.id]: [channel1.id, channel2.id, channel3.id],
+        // eslint-disable-next-line no-useless-computed-key
         ['']: [channel4.id],
     };
 
@@ -3303,15 +3213,21 @@ describe('Selectors.Channels.getUnreadsInCurrentTeam', () => {
         ...TestHelper.fakeChannelWithId(team1.id),
         total_msg_count: 8,
     };
+    const channel3 = {
+        ...TestHelper.fakeChannelWithId(team1.id),
+        total_msg_count: 5,
+    };
 
     const channels = {
         [channel1.id]: channel1,
         [channel2.id]: channel2,
+        [channel3.id]: channel3,
     };
 
     const myChannelMembers = {
         [channel1.id]: {notify_props: {}, mention_count: 1, msg_count: 0},
         [channel2.id]: {notify_props: {}, mention_count: 4, msg_count: 0},
+        [channel3.id]: {notify_props: {}, mention_count: 4, msg_count: 5},
     };
 
     const channelsInTeam = {
@@ -3343,6 +3259,32 @@ describe('Selectors.Channels.getUnreadsInCurrentTeam', () => {
 
     it('get unreads for current team', () => {
         assert.deepEqual(Selectors.getUnreadsInCurrentTeam(testState), {mentionCount: 4, messageCount: 1});
+    });
+
+    it('get unreads for current read channel', () => {
+        const testState2 = {...testState,
+            entities: {...testState.entities,
+                channels: {...testState.entities.channels,
+                    currentChannelId: channel3.id,
+                },
+            },
+        };
+        assert.equal(Selectors.countCurrentChannelUnreadMessages(testState2), 0);
+    });
+
+    it('get unreads for current unread channel', () => {
+        assert.equal(Selectors.countCurrentChannelUnreadMessages(testState), 2);
+    });
+
+    it('get unreads for channel not on members', () => {
+        const testState2 = {...testState,
+            entities: {...testState.entities,
+                channels: {...testState.entities.channels,
+                    currentChannelId: 'some_other_id',
+                },
+            },
+        };
+        assert.equal(Selectors.countCurrentChannelUnreadMessages(testState2), 0);
     });
 
     it('get unreads with a missing profile entity', () => {
@@ -3887,4 +3829,27 @@ test('Selectors.Channels.isManuallyUnread', () => {
     assert.equal(Selectors.isManuallyUnread(state, undefined), false);
     assert.equal(Selectors.isManuallyUnread(state, 'channel2'), false);
     assert.equal(Selectors.isManuallyUnread(state, 'channel3'), false);
+});
+
+test('Selectors.Channels.getChannelModerations', () => {
+    const moderations = [{
+        name: Permissions.CHANNEL_MODERATED_PERMISSIONS.CREATE_POST,
+        roles: {
+            members: true,
+        },
+    }];
+
+    const state = {
+        entities: {
+            channels: {
+                channelModerations: {
+                    channel1: moderations,
+                },
+            },
+        },
+    };
+
+    assert.equal(Selectors.getChannelModerations(state, 'channel1'), moderations);
+    assert.equal(Selectors.getChannelModerations(state, undefined), undefined);
+    assert.equal(Selectors.getChannelModerations(state, 'undefined'), undefined);
 });

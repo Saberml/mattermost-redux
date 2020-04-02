@@ -6,6 +6,7 @@ export type ChannelType = 'O' | 'P' | 'D' | 'G';
 export type ChannelStats = {
     channel_id: string;
     member_count: number;
+    pinnedpost_count: number;
 };
 export type ChannelNotifyProps = {
     desktop: 'default' | 'all' | 'mention' | 'none';
@@ -36,6 +37,11 @@ export type Channel = {
     fake?: boolean;
     group_constrained: boolean;
 };
+export type ChannelWithTeamData = Channel & {
+    team_display_name: string;
+    team_name: string;
+    team_update_at: number;
+}
 export type ChannelMembership = {
     channel_id: string;
     user_id: string;
@@ -68,4 +74,27 @@ export type ChannelsState = {
     groupsAssociatedToChannel: any;
     totalCount: number;
     manuallyUnread: RelationOneToOne<Channel, boolean>;
+    channelModerations: RelationOneToOne<Channel, Array<ChannelModeration>>;
+};
+
+export type ChannelModeration = {
+    name: string;
+    roles: {
+        guests?: {
+            value: boolean;
+            enabled: boolean;
+        };
+        members: {
+            value: boolean;
+            enabled: boolean;
+        };
+    };
+};
+
+export type ChannelModerationPatch = {
+    name: string;
+    roles: {
+        guests?: boolean;
+        members?: boolean;
+    };
 };

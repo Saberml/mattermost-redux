@@ -16,6 +16,7 @@ import * as TeamActions from 'actions/teams';
 import * as UserActions from 'actions/users';
 import EventEmitter from 'utils/event_emitter';
 import {loadRolesIfNeeded as mockLoadRolesIfNeeded} from 'actions/roles';
+import {batchActions} from 'types/actions';
 
 import {Client4} from 'client';
 import {General, Posts, RequestStatus, WebsocketEvents} from '../constants';
@@ -119,6 +120,54 @@ describe('Actions.Websocket', () => {
         PostSelectors.getPost.mockReturnValueOnce(false);
         mockServer.emit('message', JSON.stringify(messageFor(currentChannelId)));
         expect(emit).toHaveBeenCalledWith(WebsocketEvents.INCREASE_POST_VISIBILITY_BY_ONE);
+    });
+
+    it('Websocket Handle New Post if status is manually set do not set to online', async () => {
+        const userId = TestHelper.generateId();
+
+        store = await configureStore({
+            entities: {
+                users: {
+                    statuses: {
+                        [userId]: General.DND,
+                    },
+                    isManualStatus: {
+                        [userId]: true,
+                    },
+                },
+            },
+        });
+        await store.dispatch(Actions.init(
+            'web',
+            null,
+            null,
+            MockWebSocket
+        ));
+
+        const channelId = TestHelper.basicChannel.id;
+        const message = JSON.stringify({
+            event: WebsocketEvents.POSTED,
+            data: {
+                channel_display_name: TestHelper.basicChannel.display_name,
+                channel_name: TestHelper.basicChannel.name,
+                channel_type: 'O',
+                post: `{"id": "71k8gz5ompbpfkrzaxzodffj8w", "create_at": 1508245311774, "update_at": 1508245311774, "edit_at": 0, "delete_at": 0, "is_pinned": false, "user_id": "${userId}", "channel_id": "${channelId}", "root_id": "", "parent_id": "", "original_id": "", "message": "Unit Test", "type": "", "props": {}, "hashtags": "", "pending_post_id": "t36kso9nwtdhbm8dbkd6g4eeby: 1508245311749"}`,
+                sender_name: TestHelper.basicUser.username,
+                team_id: TestHelper.basicTeam.id,
+            },
+            broadcast: {
+                omit_users: null,
+                user_id: userId,
+                channel_id: channelId,
+                team_id: '',
+            },
+            seq: 2,
+        });
+
+        mockServer.emit('message', message);
+        const entities = store.getState().entities;
+        const statuses = entities.users.statuses;
+        assert.equal(statuses[userId], General.DND);
     });
 
     it('Websocket Handle Post Edited', async () => {
@@ -365,6 +414,25 @@ describe('Actions.Websocket', () => {
         assert.ok(profilesNotInChannel[TestHelper.basicChannel.id].has(user.id));
     });
 
+    it('Websocket Handle User Removed when Current is Guest', async () => {
+        const basicGuestUser = TestHelper.fakeUserWithId();
+        basicGuestUser.roles = 'system_guest';
+
+        const user = {...TestHelper.fakeUser(), id: TestHelper.generateId()};
+
+        // add user first
+        store.dispatch({type: UserTypes.RECEIVED_PROFILE_IN_CHANNEL, data: {id: TestHelper.basicChannel.id, user_id: user.id}});
+        mockServer.emit('message', JSON.stringify({event: WebsocketEvents.USER_ADDED, data: {team_id: TestHelper.basicTeam.id, user_id: user.id}, broadcast: {omit_users: null, user_id: '', channel_id: TestHelper.basicChannel.id, team_id: ''}, seq: 42}));
+
+        assert.ok(store.getState().entities.users.profilesInChannel[TestHelper.basicChannel.id].has(user.id));
+
+        // remove user
+        store.dispatch({type: UserTypes.RECEIVED_PROFILE_NOT_IN_CHANNEL, data: {id: TestHelper.basicChannel.id, user_id: user.id}});
+        mockServer.emit('message', JSON.stringify({event: WebsocketEvents.USER_REMOVED, data: {remover_id: basicGuestUser.id, user_id: user.id}, broadcast: {omit_users: null, user_id: '', channel_id: TestHelper.basicChannel.id, team_id: ''}, seq: 42}));
+
+        assert.ok(!store.getState().entities.users.profilesInChannel[TestHelper.basicChannel.id].has(user.id));
+    });
+
     it('Websocket Handle User Updated', async () => {
         const user = {...TestHelper.fakeUser(), id: TestHelper.generateId()};
         mockServer.emit('message', JSON.stringify({event: WebsocketEvents.USER_UPDATED, data: {user: {id: user.id, create_at: 1495570297229, update_at: 1508253268652, delete_at: 0, username: 'tim', auth_data: '', auth_service: '', email: 'tim@bladekick.com', nickname: '', first_name: 'tester4', last_name: '', position: '', roles: 'system_user', locale: 'en'}}, broadcast: {omit_users: null, user_id: '', channel_id: '', team_id: ''}, seq: 53}));
@@ -380,18 +448,18 @@ describe('Actions.Websocket', () => {
 
     it('Websocket Handle Channel Member Updated', async () => {
         const channelMember = TestHelper.basicChannelMember;
-        channelMember.roles = "channel_user channel_admin"
+        channelMember.roles = 'channel_user channel_admin';
         mockServer.emit('message', JSON.stringify({
-            event: WebsocketEvents.CHANNEL_MEMBER_UPDATED, 
-            data: { 
-                channelMember: JSON.stringify(channelMember)
-            }
+            event: WebsocketEvents.CHANNEL_MEMBER_UPDATED,
+            data: {
+                channelMember: JSON.stringify(channelMember),
+            },
         }));
         expect(mockLoadRolesIfNeeded).toHaveBeenCalledTimes(1);
         expect(mockLoadRolesIfNeeded).toHaveBeenCalledWith(channelMember.roles.split(' '));
         store.subscribe(() => {
             const state = store.getState();
-            expect(state.entities.channels.membersInChannel[channelMember.channel_id][channelMember.user_id].roles).toEqual("channel_user channel_admin");
+            expect(state.entities.channels.membersInChannel[channelMember.channel_id][channelMember.user_id].roles).toEqual('channel_user channel_admin');
         });
     });
 
@@ -457,6 +525,7 @@ describe('Actions.Websocket', () => {
 
     it('Websocket Handle Channel Deleted', (done) => {
         async function test() {
+            const time = Date.now();
             await store.dispatch(TeamActions.selectTeam(TestHelper.basicTeam));
             await store.dispatch(ChannelActions.selectChannel(TestHelper.basicChannel.id));
 
@@ -467,7 +536,20 @@ describe('Actions.Websocket', () => {
                 get(`/teams/${TestHelper.basicTeam.id}/channels/members`).
                 reply(201, [{user_id: TestHelper.basicUser.id, channel_id: TestHelper.basicChannel.id}]);
 
-            mockServer.emit('message', JSON.stringify({event: WebsocketEvents.CHANNEL_DELETED, data: {channel_id: TestHelper.basicChannel.id}, broadcast: {omit_users: null, user_id: '', channel_id: '', team_id: TestHelper.basicTeam.id}, seq: 68}));
+            mockServer.emit('message', JSON.stringify({
+                event: WebsocketEvents.CHANNEL_DELETED,
+                data: {
+                    channel_id: TestHelper.basicChannel.id,
+                    delete_at: time,
+                },
+                broadcast: {
+                    omit_users: null,
+                    user_id: '',
+                    channel_id: '',
+                    team_id: TestHelper.basicTeam.id,
+                },
+                seq: 68,
+            }));
 
             setTimeout(() => {
                 const state = store.getState();
@@ -480,6 +562,29 @@ describe('Actions.Websocket', () => {
         }
 
         test();
+    });
+
+    it('Websocket Handle Channel Unarchive', async (done) => {
+        await store.dispatch(TeamActions.selectTeam(TestHelper.basicTeam));
+        await store.dispatch(ChannelActions.selectChannel(TestHelper.basicChannel.id));
+
+        store.dispatch({type: ChannelTypes.RECEIVED_CHANNEL, data: {id: TestHelper.generateId(), name: General.DEFAULT_CHANNEL, team_id: TestHelper.basicTeam.id, display_name: General.DEFAULT_CHANNEL}});
+        store.dispatch({type: ChannelTypes.RECEIVED_CHANNEL, data: TestHelper.basicChannel});
+
+        nock(Client4.getUserRoute('me')).
+            get(`/teams/${TestHelper.basicTeam.id}/channels/members`).
+            reply(201, [{user_id: TestHelper.basicUser.id, channel_id: TestHelper.basicChannel.id}]);
+
+        mockServer.emit('message', JSON.stringify({event: WebsocketEvents.CHANNEL_UNARCHIVE, data: {channel_id: TestHelper.basicChannel.id}, broadcast: {omit_users: null, user_id: '', channel_id: '', team_id: TestHelper.basicTeam.id}, seq: 68}));
+
+        setTimeout(() => {
+            const state = store.getState();
+            const entities = state.entities;
+            const {channels, currentChannelId} = entities.channels;
+
+            assert.ok(channels[currentChannelId].delete_at === 0);
+            done();
+        }, 500);
     });
 
     it('Websocket Handle Direct Channel', (done) => {
@@ -507,16 +612,16 @@ describe('Actions.Websocket', () => {
         async function test() {
             const team = {id: TestHelper.generateId()};
 
-            nock(Client4.getTeamRoute(team.id)).
-                get('').
+            nock(Client4.getBaseRoute()).
+                get(`/teams/${team.id}`).
                 reply(200, team);
 
-            nock(Client4.getUserRoute('me')).
-                get('/teams/members').
+            nock(Client4.getBaseRoute()).
+                get('/users/me/teams/members').
                 reply(200, [{team_id: team.id, user_id: TestHelper.basicUser.id}]);
 
-            nock(Client4.getUserRoute('me')).
-                get('/teams/unread').
+            nock(Client4.getBaseRoute()).
+                get('/users/me/teams/unread').
                 reply(200, [{team_id: team.id, msg_count: 0, mention_count: 0}]);
 
             mockServer.emit('message', JSON.stringify({event: WebsocketEvents.ADDED_TO_TEAM, data: {team_id: team.id, user_id: TestHelper.basicUser.id}, broadcast: {omit_users: null, user_id: TestHelper.basicUser.id, channel_id: '', team_id: ''}, seq: 2}));
@@ -610,13 +715,17 @@ describe('Actions.Websocket', () => {
 
 describe('Actions.Websocket doReconnect', () => {
     const mockStore = configureMockStore([thunk]);
+    const me = TestHelper.fakeUserWithId();
 
     const currentTeamId = 'team-id';
-    const currentUserId = 'user-id';
+    const currentUserId = me.id;
     const currentChannelId = 'channel-id';
 
     const initialState = {
         entities: {
+            general: {
+                config: {},
+            },
             teams: {
                 currentTeamId,
                 myMembers: {
@@ -639,6 +748,9 @@ describe('Actions.Websocket doReconnect', () => {
             },
             users: {
                 currentUserId,
+                profiles: {
+                    [me.id]: me,
+                },
             },
             preferences: {
                 myPreferences: {},
@@ -764,6 +876,50 @@ describe('Actions.Websocket doReconnect', () => {
         expect(actions).not.toEqual(expect.arrayContaining(expectedMissingActions));
     });
 
+    it('handle doReconnect after the current channel was archived and setting is on', async () => {
+        const state = {
+            ...initialState,
+            general: {
+                config: {
+                    ExperimentalViewArchivedChannels: 'true',
+                },
+            },
+            channels: {
+                currentChannelId,
+                channels: {
+                    currentChannelId: {
+                        id: currentChannelId,
+                        name: 'channel',
+                        delete_at: 123,
+                    },
+                },
+            },
+        };
+        const testStore = await mockStore(state);
+
+        const timestamp = 1000;
+        const expectedActions = [
+            {type: MOCK_GET_PREFERENCES},
+            {type: MOCK_GET_STATUSES_BY_IDS},
+            {type: MOCK_MY_TEAM_UNREADS},
+            {type: MOCK_GET_MY_TEAMS},
+            {type: MOCK_GET_MY_TEAM_MEMBERS},
+            {type: MOCK_CHANNELS_REQUEST, data: [], teamId: currentTeamId, sync: true},
+            {type: MOCK_CHECK_FOR_MODIFIED_USERS},
+            {type: GeneralTypes.WEBSOCKET_SUCCESS, timestamp, data: null},
+        ];
+
+        const expectedMissingActions = [
+            {type: MOCK_GET_POSTS},
+        ];
+
+        await testStore.dispatch(Actions.doReconnect(timestamp));
+
+        const actions = testStore.getActions();
+        expect(actions).toEqual(expect.arrayContaining(expectedActions));
+        expect(actions).not.toEqual(expect.arrayContaining(expectedMissingActions));
+    });
+
     it('handle doReconnect after user left current team', async () => {
         const state = {...initialState};
         state.entities.teams.myMembers = {};
@@ -790,5 +946,198 @@ describe('Actions.Websocket doReconnect', () => {
         const actions = testStore.getActions();
         expect(actions).toEqual(expect.arrayContaining(expectedActions));
         expect(actions).not.toEqual(expect.arrayContaining(expectedMissingActions));
+    });
+});
+
+describe('Actions.Websocket removeNotVisibleUsers', () => {
+    const mockStore = configureMockStore([thunk]);
+
+    const channel1 = TestHelper.fakeChannelWithId('');
+    const channel2 = TestHelper.fakeChannelWithId('');
+
+    const me = TestHelper.fakeUserWithId();
+    const user = TestHelper.fakeUserWithId();
+    const user2 = TestHelper.fakeUserWithId();
+    const user3 = TestHelper.fakeUserWithId();
+    const user4 = TestHelper.fakeUserWithId();
+    const user5 = TestHelper.fakeUserWithId();
+
+    it('should do nothing if the known users and the profiles list are the same', async () => {
+        const membersInChannel = {
+            [channel1.id]: {
+                [user.id]: {channel_id: channel1.id, user_id: user.id},
+                [user2.id]: {channel_id: channel1.id, user_id: user2.id},
+            },
+            [channel2.id]: {
+                [user3.id]: {channel_id: channel2.id, user_id: user3.id},
+            },
+        };
+
+        const profiles = {
+            [me.id]: me,
+            [user.id]: user,
+            [user2.id]: user2,
+            [user3.id]: user3,
+        };
+
+        const state = {
+            entities: {
+                channels: {
+                    membersInChannel,
+                },
+                users: {
+                    currentUserId: me.id,
+                    profiles,
+                },
+            },
+        };
+        const testStore = await mockStore(state);
+        await testStore.dispatch(Actions.removeNotVisibleUsers());
+        const actions = testStore.getActions();
+        expect(actions.length).toEqual(0);
+    });
+
+    it('should do nothing if there are known users in my memberships but not in the profiles list', async () => {
+        const membersInChannel = {
+            [channel1.id]: {
+                [user.id]: {channel_id: channel1.id, user_id: user.id},
+                [user2.id]: {channel_id: channel1.id, user_id: user2.id},
+            },
+            [channel2.id]: {
+                [user3.id]: {channel_id: channel2.id, user_id: user3.id},
+            },
+        };
+
+        const profiles = {
+            [me.id]: me,
+            [user3.id]: user3,
+        };
+
+        const state = {
+            entities: {
+                channels: {
+                    membersInChannel,
+                },
+                users: {
+                    currentUserId: me.id,
+                    profiles,
+                },
+            },
+        };
+        const testStore = await mockStore(state);
+        await testStore.dispatch(Actions.removeNotVisibleUsers());
+        const actions = testStore.getActions();
+        expect(actions.length).toEqual(0);
+    });
+
+    it('should remove the users if there are unknown users in the profiles list', async () => {
+        const membersInChannel = {
+            [channel1.id]: {
+                [user.id]: {channel_id: channel1.id, user_id: user.id},
+            },
+            [channel2.id]: {
+                [user3.id]: {channel_id: channel2.id, user_id: user3.id},
+            },
+        };
+
+        const profiles = {
+            [me.id]: me,
+            [user.id]: user,
+            [user2.id]: user2,
+            [user3.id]: user3,
+            [user4.id]: user4,
+            [user5.id]: user5,
+        };
+
+        const state = {
+            entities: {
+                channels: {
+                    membersInChannel,
+                },
+                users: {
+                    currentUserId: me.id,
+                    profiles,
+                },
+            },
+        };
+        const testStore = await mockStore(state);
+        await testStore.dispatch(Actions.removeNotVisibleUsers());
+
+        const expectedAction = batchActions([
+            {type: UserTypes.PROFILE_NO_LONGER_VISIBLE, data: {user_id: user2.id}},
+            {type: UserTypes.PROFILE_NO_LONGER_VISIBLE, data: {user_id: user4.id}},
+            {type: UserTypes.PROFILE_NO_LONGER_VISIBLE, data: {user_id: user5.id}},
+        ]);
+        const actions = testStore.getActions();
+        expect(actions.length).toEqual(1);
+        expect(actions[0]).toEqual(expectedAction);
+    });
+});
+
+describe('Actions.Websocket handleUserTypingEvent', () => {
+    const mockStore = configureMockStore([thunk]);
+
+    const MOCK_GET_STATUSES_BY_IDS = 'MOCK_GET_STATUSES_BY_IDS';
+    const currentUserId = 'user-id';
+    const otherUserId = 'other-user-id';
+    const currentChannelId = 'channel-id';
+    const otherChannelId = 'other-channel-id';
+
+    const initialState = {
+        entities: {
+            general: {
+                config: {},
+            },
+            channels: {
+                currentChannelId,
+                channels: {
+                    currentChannelId: {
+                        id: currentChannelId,
+                        name: 'channel',
+                    },
+                },
+            },
+            users: {
+                currentUserId,
+                profiles: {
+                    [currentUserId]: {},
+                    [otherUserId]: {},
+                },
+                statuses: {
+                    [currentUserId]: {},
+                    [otherUserId]: {},
+                },
+            },
+            preferences: {
+                myPreferences: {},
+            },
+        },
+    };
+
+    it('dispatches actions for current channel if other user is typing', async () => {
+        const state = {...initialState};
+        const testStore = await mockStore(state);
+        const msg = {broadcast: {channel_id: currentChannelId}, data: {parent_id: 'parent-id', user_id: otherUserId}};
+
+        const expectedActionsTypes = [
+            WebsocketEvents.TYPING,
+            MOCK_GET_STATUSES_BY_IDS,
+        ];
+
+        await testStore.dispatch(Actions.handleUserTypingEvent(msg));
+        const actionTypes = testStore.getActions().map((action) => action.type);
+        expect(actionTypes).toEqual(expectedActionsTypes);
+    });
+
+    it('does not dispatch actions for non current channel', async () => {
+        const state = {...initialState};
+        const testStore = await mockStore(state);
+        const msg = {broadcast: {channel_id: otherChannelId}, data: {parent_id: 'parent-id', user_id: otherUserId}};
+
+        const expectedActionsTypes = [];
+
+        await testStore.dispatch(Actions.handleUserTypingEvent(msg));
+        const actionTypes = testStore.getActions().map((action) => action.type);
+        expect(actionTypes).toEqual(expectedActionsTypes);
     });
 });

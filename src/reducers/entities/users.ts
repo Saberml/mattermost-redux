@@ -5,7 +5,7 @@ import {combineReducers} from 'redux';
 import {UserTypes, ChannelTypes} from 'action_types';
 import {profileListToMap} from 'utils/user_utils';
 import {GenericAction} from 'types/actions';
-import {UserProfile} from 'types/users';
+import {UserProfile, UserStatus} from 'types/users';
 import {RelationOneToMany, IDMappedObjects, RelationOneToOne} from 'types/utilities';
 import {Team} from 'types/teams';
 import {Channel} from 'types/channels';
@@ -67,6 +67,18 @@ function addProfileToSet(state: RelationOneToMany<Team, UserProfile>, action: Ge
     };
 }
 
+function removeProfileFromTeams(state: RelationOneToMany<Team, UserProfile>, action: GenericAction) {
+    const newState = {...state};
+    let removed = false;
+    Object.keys(state).forEach((key) => {
+        if (newState[key][action.data.user_id]) {
+            delete newState[key][action.data.user_id];
+            removed = true;
+        }
+    });
+    return removed ? newState : state;
+}
+
 function removeProfileFromSet(state: RelationOneToMany<Team, UserProfile>, action: GenericAction) {
     const {id, user_id: userId} = action.data;
     const nextSet = new Set(state[id]);
@@ -85,6 +97,11 @@ function currentUserId(state = '', action: GenericAction) {
         return data.id;
     }
 
+    case UserTypes.LOGIN: { // Used by the mobile app
+        const {user} = action.data;
+
+        return user ? user.id : state;
+    }
     case UserTypes.LOGOUT_SUCCESS:
         return '';
     }
@@ -165,6 +182,36 @@ function profiles(state: IDMappedObjects<UserProfile> = {}, action: GenericActio
     case UserTypes.RECEIVED_PROFILES:
         return Object.assign({}, state, action.data);
 
+    case UserTypes.LOGIN: { // Used by the mobile app
+        const {user} = action.data;
+
+        if (user) {
+            const nextState = {...state};
+            nextState[user.id] = user;
+            return nextState;
+        }
+
+        return state;
+    }
+    case UserTypes.RECEIVED_BATCHED_PROFILES_IN_CHANNEL: {
+        const {data} = action;
+        if (data && data.length) {
+            const nextState = {...state};
+            const ids = new Set();
+
+            data.forEach((d: any) => {
+                d.data.users.forEach((u: UserProfile) => {
+                    if (!ids.has(u.id)) {
+                        ids.add(u.id);
+                        nextState[u.id] = u;
+                    }
+                });
+            });
+            return nextState;
+        }
+
+        return state;
+    }
     case UserTypes.LOGOUT_SUCCESS:
         return {};
     case UserTypes.RECEIVED_TERMS_OF_SERVICE_STATUS: {
@@ -178,7 +225,14 @@ function profiles(state: IDMappedObjects<UserProfile> = {}, action: GenericActio
             },
         };
     }
-
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE: {
+        if (state[action.data.user_id]) {
+            const newState = {...state};
+            delete newState[action.data.user_id];
+            return newState;
+        }
+        return state;
+    }
     default:
         return state;
     }
@@ -203,6 +257,9 @@ function profilesInTeam(state: RelationOneToMany<Team, UserProfile> = {}, action
 
     case UserTypes.LOGOUT_SUCCESS:
         return {};
+
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE:
+        return removeProfileFromTeams(state, action);
 
     default:
         return state;
@@ -229,6 +286,9 @@ function profilesNotInTeam(state: RelationOneToMany<Team, UserProfile> = {}, act
     case UserTypes.LOGOUT_SUCCESS:
         return {};
 
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE:
+        return removeProfileFromTeams(state, action);
+
     default:
         return state;
     }
@@ -246,6 +306,7 @@ function profilesWithoutTeam(state: Set<string> = new Set(), action: GenericActi
         action.data.forEach((user: UserProfile) => nextSet.add(user.id));
         return nextSet;
     }
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE:
     case UserTypes.RECEIVED_PROFILE_IN_TEAM: {
         const nextSet = new Set(state);
         nextSet.delete(action.data.id);
@@ -284,6 +345,27 @@ function profilesInChannel(state: RelationOneToMany<Channel, UserProfile> = {}, 
     case UserTypes.LOGOUT_SUCCESS:
         return {};
 
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE:
+        return removeProfileFromTeams(state, action);
+
+    case UserTypes.RECEIVED_BATCHED_PROFILES_IN_CHANNEL: { // Used by the mobile  app
+        const {data} = action;
+
+        if (data && data.length) {
+            const nextState: any = {...state};
+            data.forEach((d: any) => {
+                const {channelId, users} = d.data;
+                const nextSet = new Set(state[channelId]);
+
+                users.forEach((u: UserProfile) => nextSet.add(u.id));
+                nextState[channelId] = nextSet;
+            });
+
+            return nextState;
+        }
+
+        return state;
+    }
     default:
         return state;
     }
@@ -317,6 +399,9 @@ function profilesNotInChannel(state: RelationOneToMany<Channel, UserProfile> = {
     case UserTypes.LOGOUT_SUCCESS:
         return {};
 
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE:
+        return removeProfileFromTeams(state, action);
+
     default:
         return state;
     }
@@ -341,7 +426,73 @@ function statuses(state: RelationOneToOne<UserProfile, string> = {}, action: Gen
     }
     case UserTypes.LOGOUT_SUCCESS:
         return {};
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE: {
+        if (state[action.data.user_id]) {
+            const newState = {...state};
+            delete newState[action.data.user_id];
+            return newState;
+        }
+        return state;
+    }
+    case UserTypes.RECEIVED_BATCHED_PROFILES_IN_CHANNEL: { // Used by the mobile app
+        const {data} = action;
+        if (data && data.length) {
+            const nextState = {...state};
+            const ids = new Set();
 
+            let hasNewStatuses = false;
+            data.forEach((d: any) => {
+                const {statuses: st} = d.data;
+                if (st && st.length) {
+                    st.forEach((u: UserStatus) => {
+                        if (!ids.has(u.user_id)) {
+                            ids.add(u.user_id);
+                            nextState[u.user_id] = u.status;
+                            hasNewStatuses = true;
+                        }
+                    });
+                }
+            });
+
+            if (hasNewStatuses) {
+                return nextState;
+            }
+        }
+
+        return state;
+    }
+    default:
+        return state;
+    }
+}
+
+function isManualStatus(state: RelationOneToOne<UserProfile, boolean> = {}, action: GenericAction) {
+    switch (action.type) {
+    case UserTypes.RECEIVED_STATUS: {
+        const nextState = Object.assign({}, state);
+        nextState[action.data.user_id] = action.data.manual;
+
+        return nextState;
+    }
+    case UserTypes.RECEIVED_STATUSES: {
+        const nextState = Object.assign({}, state);
+
+        for (const s of action.data) {
+            nextState[s.user_id] = s.manual;
+        }
+
+        return nextState;
+    }
+    case UserTypes.LOGOUT_SUCCESS:
+        return {};
+    case UserTypes.PROFILE_NO_LONGER_VISIBLE: {
+        if (state[action.data.user_id]) {
+            const newState = {...state};
+            delete newState[action.data.user_id];
+            return newState;
+        }
+        return state;
+    }
     default:
         return state;
     }
@@ -446,6 +597,9 @@ export default combineReducers({
 
     // object where every key is the user id and has a value with the current status of each user
     statuses,
+
+    // object where every key is the user id and has a value with a flag determining if their status was set manually
+    isManualStatus,
 
     // Total user stats
     stats,

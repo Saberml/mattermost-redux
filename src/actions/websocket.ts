@@ -6,27 +6,28 @@ import websocketClient from '../client/websocket_client';
 
 import {ChannelTypes, GeneralTypes, EmojiTypes, PostTypes, PreferenceTypes, TeamTypes, UserTypes, RoleTypes, AdminTypes, IntegrationTypes} from 'action_types';
 import {General, WebsocketEvents, Preferences} from '../constants';
-import {getAllChannels, getChannel, getChannelsNameMapInTeam, getCurrentChannelId, getMyChannelMember, getRedirectChannelNameForTeam, getCurrentChannelStats, isManuallyUnread} from 'selectors/entities/channels';
+import {getAllChannels, getChannel, getChannelsNameMapInTeam, getCurrentChannelId, getCurrentChannel, getMyChannelMember as getMyChannelMemberSelector, getRedirectChannelNameForTeam, getCurrentChannelStats, getMyChannels, getChannelMembersInChannels, isManuallyUnread, getKnownUsers} from 'selectors/entities/channels';
 import {getConfig} from 'selectors/entities/general';
 import {getAllPosts, getPost as getPostSelector} from 'selectors/entities/posts';
 import {getDirectShowPreferences} from 'selectors/entities/preferences';
 import {getCurrentTeamId, getCurrentTeamMembership, getTeams as getTeamsSelector} from 'selectors/entities/teams';
-import {getCurrentUser, getCurrentUserId, getUsers, getUserStatuses} from 'selectors/entities/users';
+import {getCurrentUser, getCurrentUserId, getUsers, getUserStatuses, getIsManualStatusForUserId} from 'selectors/entities/users';
 import {getChannelByName} from 'utils/channel_utils';
 import {fromAutoResponder} from 'utils/post_utils';
 import EventEmitter from 'utils/event_emitter';
 import {getMyPreferences} from './preferences';
 
-import {ActionFunc, DispatchFunc, GetStateFunc, PlatformType} from 'types/actions';
+import {ActionFunc, DispatchFunc, GetStateFunc, PlatformType, batchActions} from 'types/actions';
 
 import {getTeam, getMyTeamUnreads, getMyTeams, getMyTeamMembers} from './teams';
 import {getPost, getPosts, getProfilesAndStatusesForPosts, getCustomEmojiForReaction, getUnreadPostData, handleNewPost, postDeleted, receivedPost} from './posts';
-import {fetchMyChannelsAndMembers, getChannelAndMyMember, getChannelStats, markChannelAsRead} from './channels';
+import {fetchMyChannelsAndMembers, getChannelAndMyMember, getChannelStats, markChannelAsRead, getMyChannelMember} from './channels';
 import {checkForModifiedUsers, getMe, getProfilesByIds, getStatusesByIds, loadProfilesForDirect} from './users';
 import {loadRolesIfNeeded} from './roles';
 import {Channel, ChannelMembership} from 'types/channels';
 import {Dictionary} from 'types/utilities';
 import {PreferenceType} from 'types/preferences';
+import {isGuest} from 'utils/user_utils';
 let doDispatch: DispatchFunc;
 export function init(platform: PlatformType, siteUrl: string | undefined | null, token: string | undefined | null, optionalWebSocket: any, additionalOptions: any = {}) {
     return async (dispatch: DispatchFunc, getState: GetStateFunc) => {
@@ -137,6 +138,7 @@ export function doReconnect(now: number) {
             await dispatch(getMyTeamMembers());
             const currentTeamMembership = getCurrentTeamMembership(getState());
             if (currentTeamMembership) {
+                const currentChannel = getCurrentChannel(state);
                 const fethcResult = await dispatch(fetchMyChannelsAndMembers(currentTeamId));
                 const data = (fethcResult as any).data || null;
                 dispatch(loadProfilesForDirect());
@@ -144,8 +146,10 @@ export function doReconnect(now: number) {
                 if (data && data.channels && data.members) {
                     const channelStillExists = data.channels.find((c: Channel) => c.id === currentChannelId);
                     const stillMemberOfCurrentChannel = data.members.find((m: ChannelMembership) => m.channel_id === currentChannelId);
+                    const config = getConfig(getState());
+                    const viewArchivedChannels = config.ExperimentalViewArchivedChannels === 'true';
 
-                    if (!stillMemberOfCurrentChannel || !channelStillExists) {
+                    if (!stillMemberOfCurrentChannel || !channelStillExists || (!viewArchivedChannels && currentChannel.delete_at !== 0)) {
                         EventEmitter.emit(General.SWITCH_TO_DEFAULT_CHANNEL, currentTeamId);
                     } else {
                         dispatch(getPosts(currentChannelId));
@@ -267,6 +271,9 @@ function handleEvent(msg: WebSocketMessage) {
     case WebsocketEvents.CHANNEL_DELETED:
         doDispatch(handleChannelDeletedEvent(msg));
         break;
+    case WebsocketEvents.CHANNEL_UNARCHIVED:
+        doDispatch(handleChannelUnarchiveEvent(msg));
+        break;
     case WebsocketEvents.CHANNEL_UPDATED:
         doDispatch(handleChannelUpdatedEvent(msg));
         break;
@@ -278,6 +285,9 @@ function handleEvent(msg: WebSocketMessage) {
         break;
     case WebsocketEvents.CHANNEL_MEMBER_UPDATED:
         doDispatch(handleChannelMemberUpdatedEvent(msg));
+        break;
+    case WebsocketEvents.CHANNEL_SCHEME_UPDATED:
+        doDispatch(handleChannelSchemeUpdatedEvent(msg));
         break;
     case WebsocketEvents.DIRECT_ADDED:
         doDispatch(handleDirectAddedEvent(msg));
@@ -338,7 +348,7 @@ function handleNewPostEvent(msg: WebSocketMessage) {
             dispatch(handleNewPost(msg));
             getProfilesAndStatusesForPosts([post], dispatch, getState);
 
-            if (post.user_id !== getCurrentUserId(getState()) && !fromAutoResponder(post)) {
+            if (post.user_id !== getCurrentUserId(getState()) && !fromAutoResponder(post) && !getIsManualStatusForUserId(state, post.user_id)) {
                 dispatch({
                     type: UserTypes.RECEIVED_STATUSES,
                     data: [{user_id: post.user_id, status: General.ONLINE}],
@@ -372,7 +382,7 @@ function handlePostUnread(msg: WebSocketMessage) {
         const manual = isManuallyUnread(state, msg.broadcast.channel_id);
 
         if (!manual) {
-            const member = getMyChannelMember(state, msg.broadcast.channel_id);
+            const member = getMyChannelMemberSelector(state, msg.broadcast.channel_id);
             const delta = member ? member.msg_count - msg.data.msg_count : msg.data.msg_count;
             const info = {
                 ...msg.data,
@@ -398,9 +408,12 @@ function handleLeaveTeamEvent(msg: Partial<WebSocketMessage>) {
         const state = getState();
         const teams = getTeamsSelector(state);
         const currentTeamId = getCurrentTeamId(state);
-        const currentUserId = getCurrentUserId(state);
+        const currentUser = getCurrentUser(state);
 
-        if (currentUserId === msg.data.user_id) {
+        if (currentUser.id === msg.data.user_id) {
+            if (isGuest(currentUser.roles)) {
+                dispatch(removeNotVisibleUsers());
+            }
             dispatch({type: TeamTypes.LEAVE_TEAM, data: teams[msg.data.team_id]});
 
             // if they are on the team being removed deselect the current team and channel
@@ -451,7 +464,7 @@ function handleUserAddedEvent(msg: WebSocketMessage) {
                 channel_id: msg.broadcast.channel_id,
                 user_id: msg.data.user_id,
             },
-        }, getState);
+        });
 
         if (msg.broadcast.channel_id === currentChannelId) {
             dispatch(getChannelStats(currentChannelId));
@@ -470,7 +483,7 @@ function handleUserRemovedEvent(msg: WebSocketMessage) {
         const channels = getAllChannels(state);
         const currentChannelId = getCurrentChannelId(state);
         const currentTeamId = getCurrentTeamId(state);
-        const currentUserId = getCurrentUserId(state);
+        const currentUser = getCurrentUser(state);
 
         dispatch({
             type: ChannelTypes.CHANNEL_MEMBER_REMOVED,
@@ -478,11 +491,29 @@ function handleUserRemovedEvent(msg: WebSocketMessage) {
                 channel_id: msg.broadcast.channel_id,
                 user_id: msg.data.user_id,
             },
-        }, getState);
+        });
 
-        if (msg.broadcast.user_id === currentUserId && currentTeamId) {
-            const channel = channels[currentChannelId];
+        const channel = channels[currentChannelId];
 
+        if (msg.data.user_id !== currentUser.id) {
+            const members = getChannelMembersInChannels(state);
+            const isMember = Object.values(members).some((member) => member[msg.data.user_id]);
+            if (channel && isGuest(currentUser.roles) && !isMember) {
+                const actions = [
+                    {
+                        type: UserTypes.PROFILE_NO_LONGER_VISIBLE,
+                        data: {user_id: msg.data.user_id},
+                    },
+                    {
+                        type: TeamTypes.REMOVE_MEMBER_FROM_TEAM,
+                        data: {team_id: channel.team_id, user_id: msg.data.user_id},
+                    },
+                ];
+                dispatch(batchActions(actions));
+            }
+        }
+
+        if (msg.broadcast.user_id === currentUser.id && currentTeamId) {
             dispatch(fetchMyChannelsAndMembers(currentTeamId));
 
             if (channel) {
@@ -490,7 +521,7 @@ function handleUserRemovedEvent(msg: WebSocketMessage) {
                     type: ChannelTypes.LEAVE_CHANNEL,
                     data: {
                         id: msg.data.channel_id,
-                        user_id: currentUserId,
+                        user_id: currentUser.id,
                         team_id: channel.team_id,
                         type: channel.type,
                     },
@@ -500,6 +531,9 @@ function handleUserRemovedEvent(msg: WebSocketMessage) {
             if (msg.data.channel_id === currentChannelId) {
                 // emit the event so the client can change his own state
                 EventEmitter.emit(General.SWITCH_TO_DEFAULT_CHANNEL, currentTeamId);
+            }
+            if (isGuest(currentUser.roles)) {
+                dispatch(removeNotVisibleUsers());
             }
         } else if (msg.data.channel_id === currentChannelId) {
             dispatch(getChannelStats(currentChannelId));
@@ -580,6 +614,8 @@ function handleChannelDeletedEvent(msg: WebSocketMessage) {
         const config = getConfig(state);
         const viewArchivedChannels = config.ExperimentalViewArchivedChannels === 'true';
 
+        dispatch({type: ChannelTypes.RECEIVED_CHANNEL_DELETED, data: {id: msg.data.channel_id, deleteAt: msg.data.delete_at, team_id: msg.broadcast.team_id, viewArchivedChannels}});
+
         if (msg.broadcast.team_id === currentTeamId) {
             if (msg.data.channel_id === currentChannelId && !viewArchivedChannels) {
                 const channelsInTeam = getChannelsNameMapInTeam(state, currentTeamId);
@@ -589,8 +625,21 @@ function handleChannelDeletedEvent(msg: WebSocketMessage) {
                 }
                 EventEmitter.emit(General.DEFAULT_CHANNEL, '');
             }
+        }
 
-            dispatch({type: ChannelTypes.RECEIVED_CHANNEL_DELETED, data: {id: msg.data.channel_id, team_id: msg.data.team_id, deleteAt: msg.data.delete_at, viewArchivedChannels}}, getState);
+        return {data: true};
+    };
+}
+
+function handleChannelUnarchiveEvent(msg: WebSocketMessage) {
+    return (dispatch: DispatchFunc, getState: GetStateFunc) => {
+        const state = getState();
+        const currentTeamId = getCurrentTeamId(state);
+        const config = getConfig(state);
+        const viewArchivedChannels = config.ExperimentalViewArchivedChannels === 'true';
+
+        if (msg.broadcast.team_id === currentTeamId) {
+            dispatch({type: ChannelTypes.RECEIVED_CHANNEL_UNARCHIVED, data: {id: msg.data.channel_id, team_id: msg.data.team_id, deleteAt: 0, viewArchivedChannels}});
 
             dispatch(fetchMyChannelsAndMembers(currentTeamId));
         }
@@ -669,6 +718,13 @@ function handleChannelMemberUpdatedEvent(msg: WebSocketMessage) {
     };
 }
 
+function handleChannelSchemeUpdatedEvent(msg: WebSocketMessage) {
+    return (dispatch: DispatchFunc) => {
+        dispatch(getMyChannelMember(msg.broadcast.channel_id));
+        return {data: true};
+    };
+}
+
 function handleDirectAddedEvent(msg: WebSocketMessage) {
     return (dispatch: DispatchFunc) => {
         dispatch(getChannelAndMyMember(msg.broadcast.channel_id));
@@ -724,41 +780,46 @@ function handleHelloEvent(msg: WebSocketMessage) {
     }
 }
 
-function handleUserTypingEvent(msg: WebSocketMessage) {
+export function handleUserTypingEvent(msg: WebSocketMessage) {
     return (dispatch: DispatchFunc, getState: GetStateFunc) => {
         const state = getState();
-        const profiles = getUsers(state);
-        const statuses = getUserStatuses(state);
-        const currentUserId = getCurrentUserId(state);
-        const config = getConfig(state);
-        const userId = msg.data.user_id;
+        const currentChannelId = getCurrentChannelId(state);
 
-        const data = {
-            id: msg.broadcast.channel_id + msg.data.parent_id,
-            userId,
-            now: Date.now(),
-        };
+        if (currentChannelId === msg.broadcast.channel_id) {
+            const profiles = getUsers(state);
+            const statuses = getUserStatuses(state);
+            const currentUserId = getCurrentUserId(state);
+            const config = getConfig(state);
+            const userId = msg.data.user_id;
 
-        dispatch({
-            type: WebsocketEvents.TYPING,
-            data,
-        });
+            const data = {
+                id: msg.broadcast.channel_id + msg.data.parent_id,
+                userId,
+                now: Date.now(),
+            };
 
-        setTimeout(() => {
             dispatch({
-                type: WebsocketEvents.STOP_TYPING,
+                type: WebsocketEvents.TYPING,
                 data,
             });
-        }, parseInt(config.TimeBetweenUserTypingUpdatesMilliseconds!, 10));
 
-        if (!profiles[userId] && userId !== currentUserId) {
-            dispatch(getProfilesByIds([userId]));
+            setTimeout(() => {
+                dispatch({
+                    type: WebsocketEvents.STOP_TYPING,
+                    data,
+                });
+            }, parseInt(config.TimeBetweenUserTypingUpdatesMilliseconds!, 10));
+
+            if (!profiles[userId] && userId !== currentUserId) {
+                dispatch(getProfilesByIds([userId]));
+            }
+
+            const status = statuses[userId];
+            if (status !== General.ONLINE) {
+                dispatch(getStatusesByIds([userId]));
+            }
         }
 
-        const status = statuses[userId];
-        if (status !== General.ONLINE) {
-            dispatch(getStatusesByIds([userId]));
-        }
         return {data: true};
     };
 }
@@ -890,6 +951,25 @@ export function userTyping(channelId: string, parentPostId: string): ActionFunc 
             (membersInChannel < parseInt(config.MaxNotificationsPerChannel!, 10)) && (config.EnableUserTypingMessages === 'true')) {
             websocketClient.userTyping(channelId, parentPostId);
             lastTimeTypingSent = t;
+        }
+
+        return {data: true};
+    };
+}
+
+export function removeNotVisibleUsers(): ActionFunc {
+    return async (dispatch: DispatchFunc, getState: GetStateFunc) => {
+        const state = getState();
+        const knownUsers = getKnownUsers(state);
+        const allUsers = Object.keys(getUsers(state));
+        const usersToRemove = new Set(allUsers.filter((x) => !knownUsers.has(x)));
+
+        const actions = [];
+        for (const userToRemove of usersToRemove.values()) {
+            actions.push({type: UserTypes.PROFILE_NO_LONGER_VISIBLE, data: {user_id: userToRemove}});
+        }
+        if (actions.length > 0) {
+            dispatch(batchActions(actions));
         }
 
         return {data: true};

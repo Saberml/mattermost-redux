@@ -60,7 +60,7 @@ export function editRole(role: Role) {
 
 export function setPendingRoles(roles: Array<string>) {
     return async (dispatch: DispatchFunc, getState: GetStateFunc) => {
-        dispatch({type: RoleTypes.SET_PENDING_ROLES, data: roles}, getState);
+        dispatch({type: RoleTypes.SET_PENDING_ROLES, data: roles});
         return {data: roles};
     };
 }
@@ -72,7 +72,7 @@ export function loadRolesIfNeeded(roles: Iterable<string>): ActionFunc {
 
         try {
             pendingRoles = new Set<string>(state.entities.roles.pending);
-    } catch (e) {// eslint-disable-line
+        } catch (e) {// eslint-disable-line
         }
 
         for (const role of roles) {

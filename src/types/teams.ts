@@ -2,6 +2,7 @@
 // See LICENSE.txt for license information.
 
 import {Dictionary} from './utilities';
+import {Error} from './errors';
 
 export type TeamMembership = {
     mention_count: number;
@@ -13,6 +14,12 @@ export type TeamMembership = {
     scheme_user: boolean;
     scheme_admin: boolean;
 };
+
+export type TeamMemberWithError = {
+    member: TeamMembership;
+    user_id: string;
+    error: Error;
+}
 
 export type TeamType = 'O' | 'I';
 
@@ -43,3 +50,14 @@ export type TeamsState = {
     groupsAssociatedToTeam: any;
     totalCount: number;
 };
+
+export type TeamUnread = {
+    team_id: string;
+    mention_count: number;
+    msg_count: number;
+};
+
+export type GetTeamMembersOpts = {
+    sort?: 'Username';
+    exclude_deleted_users?: boolean;
+}

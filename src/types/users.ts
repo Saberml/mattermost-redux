@@ -36,9 +36,12 @@ export type UserProfile = {
     terms_of_service_id: string;
     terms_of_service_create_at: number;
     timezone?: UserTimezone;
+    is_bot: boolean;
+    last_picture_update: number;
 };
 export type UsersState = {
     currentUserId: string;
+    isManualStatus: RelationOneToOne<UserProfile, boolean>;
     mySessions: Array<any>;
     myAudits: Array<any>;
     profiles: IDMappedObjects<UserProfile>;

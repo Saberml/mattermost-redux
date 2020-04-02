@@ -9,8 +9,8 @@ import {isSystemAdmin} from 'utils/user_utils';
 
 import fetch from './fetch_etag';
 import {UserProfile, UserStatus} from 'types/users';
-import {Team} from 'types/teams';
-import {Channel} from 'types/channels';
+import {Team, GetTeamMembersOpts} from 'types/teams';
+import {Channel, ChannelModerationPatch} from 'types/channels';
 import {Post} from 'types/posts';
 import {Job} from 'types/jobs';
 import {Role} from 'types/roles';
@@ -21,7 +21,6 @@ import {IncomingWebhook, OutgoingWebhook, Command, OAuthApp, DialogSubmission} f
 import {CustomEmoji} from 'types/emojis';
 import {Config} from 'types/config';
 import {Bot, BotPatch} from 'types/bots';
-import {Dictionary} from 'types/utilities';
 import {SyncablePatch} from 'types/groups';
 
 const FormData = require('form-data');
@@ -36,6 +35,7 @@ const PER_PAGE_DEFAULT = 60;
 const LOGS_PER_PAGE_DEFAULT = 10000;
 export const DEFAULT_LIMIT_BEFORE = 30;
 export const DEFAULT_LIMIT_AFTER = 30;
+
 /* eslint-disable no-throw-literal */
 
 export default class Client4 {
@@ -1061,9 +1061,9 @@ export default class Client4 {
         );
     };
 
-    getTeamMembers = async (teamId: string, page = 0, perPage = PER_PAGE_DEFAULT) => {
+    getTeamMembers = async (teamId: string, page = 0, perPage = PER_PAGE_DEFAULT, options: GetTeamMembersOpts) => {
         return this.doFetch(
-            `${this.getTeamMembersRoute(teamId)}${buildQueryString({page, per_page: perPage})}`,
+            `${this.getTeamMembersRoute(teamId)}${buildQueryString({page, per_page: perPage, ...options})}`,
             {method: 'get'}
         );
     };
@@ -1203,6 +1203,24 @@ export default class Client4 {
         );
     };
 
+    sendEmailInvitesToTeamGracefully = async (teamId: string, emails: string[]) => {
+        this.trackEvent('api', 'api_teams_invite_members', {team_id: teamId});
+
+        return this.doFetch(
+            `${this.getTeamRoute(teamId)}/invite/email?graceful=true`,
+            {method: 'post', body: JSON.stringify(emails)}
+        );
+    };
+
+    sendEmailGuestInvitesToChannelsGracefully = async (teamId: string, channelIds: string[], emails: string[], message: string) => {
+        this.trackEvent('api', 'api_teams_invite_guests', {team_id: teamId, channel_ids: channelIds});
+
+        return this.doFetch(
+            `${this.getTeamRoute(teamId)}/invite-guests/email?graceful=true`,
+            {method: 'post', body: JSON.stringify({emails, channels: channelIds, message})}
+        );
+    };
+
     importTeam = async (teamId: string, file: File, importFrom: string) => {
         const formData = new FormData();
         formData.append('file', file, file.name);
@@ -1327,6 +1345,15 @@ export default class Client4 {
         );
     };
 
+    unarchiveChannel = async (channelId: string) => {
+        this.trackEvent('api', 'api_channels_unarchive', {channel_id: channelId});
+
+        return this.doFetch(
+            `${this.getChannelRoute(channelId)}/restore`,
+            {method: 'post'}
+        );
+    };
+
     updateChannel = async (channel: Channel) => {
         this.trackEvent('api', 'api_channels_update', {channel_id: channel.id});
 
@@ -1421,9 +1448,9 @@ export default class Client4 {
         );
     };
 
-    getMyChannels = async (teamId: string) => {
+    getMyChannels = async (teamId: string, includeDeleted = false) => {
         return this.doFetch(
-            `${this.getUserRoute('me')}/teams/${teamId}/channels`,
+            `${this.getUserRoute('me')}/teams/${teamId}/channels${buildQueryString({include_deleted: includeDeleted})}`,
             {method: 'get'}
         );
     };
@@ -1500,6 +1527,20 @@ export default class Client4 {
         return this.doFetch(
             `${this.getChannelRoute(channelId)}/stats`,
             {method: 'get'}
+        );
+    };
+
+    getChannelModerations = async (channelId: string) => {
+        return this.doFetch(
+            `${this.getChannelRoute(channelId)}/moderations`,
+            {method: 'get'}
+        );
+    };
+
+    patchChannelModerations = async (channelId: string, channelModerationsPatch: Array<ChannelModerationPatch>) => {
+        return this.doFetch(
+            `${this.getChannelRoute(channelId)}/moderations/patch`,
+            {method: 'put', body: JSON.stringify(channelModerationsPatch)}
         );
     };
 
@@ -1617,48 +1658,48 @@ export default class Client4 {
         );
     };
 
-    getPostThread = async (postId: string, fetchThreads = true) => {
+    getPostThread = async (postId: string) => {
         return this.doFetch(
-            `${this.getPostRoute(postId)}/thread${buildQueryString({fetchThreads})}`,
+            `${this.getPostRoute(postId)}/thread`,
             {method: 'get'}
         );
     };
 
-    getPosts = async (channelId: string, page = 0, perPage = PER_PAGE_DEFAULT, fetchThreads = true) => {
+    getPosts = async (channelId: string, page = 0, perPage = PER_PAGE_DEFAULT) => {
         return this.doFetch(
-            `${this.getChannelRoute(channelId)}/posts${buildQueryString({page, per_page: perPage, fetchThreads})}`,
+            `${this.getChannelRoute(channelId)}/posts${buildQueryString({page, per_page: perPage})}`,
             {method: 'get'}
         );
     };
 
-    getPostsUnread = async (channelId: string, userId: string, limitAfter = DEFAULT_LIMIT_AFTER, limitBefore = DEFAULT_LIMIT_BEFORE, fetchThreads = true) => {
+    getPostsUnread = async (channelId: string, userId: string, limitAfter = DEFAULT_LIMIT_AFTER, limitBefore = DEFAULT_LIMIT_BEFORE) => {
         return this.doFetch(
-            `${this.getUserRoute(userId)}/channels/${channelId}/posts/unread${buildQueryString({limit_after: limitAfter, limit_before: limitBefore, fetchThreads})}`,
+            `${this.getUserRoute(userId)}/channels/${channelId}/posts/unread${buildQueryString({limit_after: limitAfter, limit_before: limitBefore})}`,
             {method: 'get'}
         );
     };
 
-    getPostsSince = async (channelId: string, since: number, fetchThreads = true) => {
+    getPostsSince = async (channelId: string, since: number) => {
         return this.doFetch(
-            `${this.getChannelRoute(channelId)}/posts${buildQueryString({since, fetchThreads})}`,
+            `${this.getChannelRoute(channelId)}/posts${buildQueryString({since})}`,
             {method: 'get'}
         );
     };
 
-    getPostsBefore = async (channelId: string, postId: string, page = 0, perPage = PER_PAGE_DEFAULT, fetchThreads = true) => {
+    getPostsBefore = async (channelId: string, postId: string, page = 0, perPage = PER_PAGE_DEFAULT) => {
         this.trackEvent('api', 'api_posts_get_before', {channel_id: channelId});
 
         return this.doFetch(
-            `${this.getChannelRoute(channelId)}/posts${buildQueryString({before: postId, page, per_page: perPage, fetchThreads})}`,
+            `${this.getChannelRoute(channelId)}/posts${buildQueryString({before: postId, page, per_page: perPage})}`,
             {method: 'get'}
         );
     };
 
-    getPostsAfter = async (channelId: string, postId: string, page = 0, perPage = PER_PAGE_DEFAULT, fetchThreads = true) => {
+    getPostsAfter = async (channelId: string, postId: string, page = 0, perPage = PER_PAGE_DEFAULT) => {
         this.trackEvent('api', 'api_posts_get_after', {channel_id: channelId});
 
         return this.doFetch(
-            `${this.getChannelRoute(channelId)}/posts${buildQueryString({after: postId, page, per_page: perPage, fetchThreads})}`,
+            `${this.getChannelRoute(channelId)}/posts${buildQueryString({after: postId, page, per_page: perPage})}`,
             {method: 'get'}
         );
     };
@@ -2708,9 +2749,9 @@ export default class Client4 {
         );
     };
 
-    getMarketplacePlugins = async (filter: string) => {
+    getMarketplacePlugins = async (filter: string, localOnly = false) => {
         return this.doFetch(
-            `${this.getPluginsMarketplaceRoute()}${buildQueryString({filter: filter || ''})}`,
+            `${this.getPluginsMarketplaceRoute()}${buildQueryString({filter: filter || '', local_only: localOnly})}`,
             {method: 'get'}
         );
     }
@@ -2814,6 +2855,7 @@ export default class Client4 {
 
     getGroupsAssociatedToTeam = async (teamID: string, q = '', page = 0, perPage = PER_PAGE_DEFAULT) => {
         this.trackEvent('api', 'api_groups_get_associated_to_team', {team_id: teamID});
+
         return this.doFetch(
             `${this.getBaseRoute()}/teams/${teamID}/groups${buildQueryString({page, per_page: perPage, q, include_member_count: true})}`,
             {method: 'get'}
@@ -2822,6 +2864,7 @@ export default class Client4 {
 
     getGroupsAssociatedToChannel = async (channelID: string, q = '', page = 0, perPage = PER_PAGE_DEFAULT) => {
         this.trackEvent('api', 'api_groups_get_associated_to_channel', {channel_id: channelID});
+
         return this.doFetch(
             `${this.getBaseRoute()}/channels/${channelID}/groups${buildQueryString({page, per_page: perPage, q, include_member_count: true})}`,
             {method: 'get'}
@@ -2839,6 +2882,13 @@ export default class Client4 {
         return this.doFetch(
             `${this.getBaseRoute()}/channels/${channelID}/groups?paginate=false`,
             {method: 'get'}
+        );
+    };
+
+    patchGroupSyncable = async (groupID: string, syncableID: string, syncableType: string, patch: SyncablePatch) => {
+        return this.doFetch(
+            `${this.getBaseRoute()}/groups/${groupID}/${syncableType}s/${syncableID}/patch`,
+            {method: 'put', body: JSON.stringify(patch)}
         );
     };
 
@@ -2933,6 +2983,28 @@ export default class Client4 {
         );
     }
 
+    getSamlMetadataFromIdp = async (samlMetadataURL: string) => {
+        return this.doFetch(
+            `${this.getBaseRoute()}/saml/metadatafromidp`, {method: 'post', body: JSON.stringify({saml_metadata_url: samlMetadataURL})}
+        );
+    };
+
+    setSamlIdpCertificateFromMetadata = async (certData: string) => {
+        const request: any = {
+            method: 'post',
+            body: certData,
+        };
+
+        request.headers = {
+            'Content-Type': 'application/x-pem-file',
+        };
+
+        return this.doFetch(
+            `${this.getBaseRoute()}/saml/certificate/idp`,
+            request
+        );
+    };
+
     // Client Helpers
 
     doFetch = async (url: string, options: Options) => {
@@ -2997,7 +3069,8 @@ export default class Client4 {
 
     trackEvent(category: string, event: string, props?: any) {
         // Temporary change to allow only certain events to reduce data rate - see MM-13062
-        if (![
+        // All events in 'admin' category are allowed, since they are low-volume
+        if (category !== 'admin' && ![
             'api_posts_create',
             'api_interactive_messages_button_clicked',
             'api_interactive_messages_menu_selected',
@@ -3008,6 +3081,20 @@ export default class Client4 {
             'ui_marketplace_opened',
             'ui_marketplace_closed',
             'ui_marketplace_search',
+            'signup_user_01_welcome',
+            'signup_select_team',
+            'signup_team_01_name',
+            'signup_team_02_url',
+            'click_back',
+            'click_signin_account',
+            'click_create_account',
+            'click_create_team',
+            'click_system_console',
+            'click_logout',
+            'click_next',
+            'click_finish',
+            'click_dismiss_bar',
+            'diagnostics_disabled',
         ].includes(event)) {
             return;
         }
